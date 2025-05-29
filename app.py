@@ -4,6 +4,8 @@ from pathlib import Path
 import io
 import base64
 
+MAX_FILE_SIZE_MB = 100  # Set a safe file size limit
+
 def get_download_link(df, filename, text):
     """Generate a download link for a dataframe"""
     csv = df.to_csv(index=False)
@@ -13,8 +15,11 @@ def get_download_link(df, filename, text):
 
 def split_csv(uploaded_file, chunk_size=49999):
     """Split CSV file into chunks and return list of dataframes"""
-    # Read the CSV file
-    df = pd.read_csv(uploaded_file)
+    try:
+        df = pd.read_csv(uploaded_file)
+    except Exception as e:
+        st.error(f"Error reading CSV: {e}")
+        return [], 0
     total_rows = len(df)
     
     # Calculate number of chunks
@@ -40,9 +45,16 @@ def main():
     uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
     
     if uploaded_file is not None:
+        file_size_mb = uploaded_file.size / (1024 * 1024)
+        if file_size_mb > MAX_FILE_SIZE_MB:
+            st.error(f"File is too large ({file_size_mb:.2f} MB). Please upload a file smaller than {MAX_FILE_SIZE_MB} MB.")
+            return
         try:
             # Split the CSV
             chunks, total_rows = split_csv(uploaded_file)
+            
+            if total_rows == 0:
+                return
             
             # Display summary
             st.success(f"File successfully processed!")
@@ -56,7 +68,7 @@ def main():
                 st.markdown(get_download_link(chunk, filename, f"Download Split {i} ({len(chunk)} records)"), unsafe_allow_html=True)
                 
         except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
+            st.error(f"An error occurred: {e}")
 
 if __name__ == "__main__":
     main() 
