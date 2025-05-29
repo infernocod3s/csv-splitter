@@ -4,14 +4,16 @@ from pathlib import Path
 import io
 import base64
 import gc
+import tempfile
+import os
 
 MAX_FILE_SIZE_MB = 200  # Set a safe file size limit
 
-def get_download_link(df, filename, text):
-    """Generate a download link for a dataframe"""
+@st.cache_data
+def get_download_link(csv_content, filename, text):
+    """Generate a download link for CSV content"""
     try:
-        csv = df.to_csv(index=False)
-        b64 = base64.b64encode(csv.encode()).decode()
+        b64 = base64.b64encode(csv_content.encode()).decode()
         href = f'data:file/csv;base64,{b64}'
         return f'<a href="{href}" download="{filename}">{text}</a>'
     except Exception as e:
@@ -21,93 +23,104 @@ def get_download_link(df, filename, text):
 def count_csv_rows(uploaded_file):
     """Count total rows in CSV without loading entire file into memory"""
     try:
-        uploaded_file.seek(0)  # Reset file pointer
+        uploaded_file.seek(0)
         total_rows = sum(1 for line in uploaded_file) - 1  # Subtract header
-        uploaded_file.seek(0)  # Reset file pointer again
+        uploaded_file.seek(0)
         return total_rows
     except Exception as e:
         st.error(f"Error counting rows: {e}")
         return 0
 
-def split_csv_chunked(uploaded_file, chunk_size=49999):
-    """Split CSV file into chunks using chunked reading for memory efficiency"""
+def split_csv_memory_efficient(uploaded_file, chunk_size=49999):
+    """Split CSV file using ultra-memory-efficient processing"""
     try:
-        uploaded_file.seek(0)  # Reset file pointer
+        uploaded_file.seek(0)
         
         # Count total rows first
         total_rows = count_csv_rows(uploaded_file)
         if total_rows == 0:
             return [], 0
             
-        # Calculate number of output chunks
-        num_output_chunks = (total_rows + chunk_size - 1) // chunk_size
+        num_output_files = (total_rows + chunk_size - 1) // chunk_size
+        st.info(f"Processing {total_rows:,} rows into {num_output_files} files...")
         
-        st.info(f"Processing {total_rows:,} rows into {num_output_chunks} files...")
-        
-        # Progress bar
+        # Progress tracking
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        chunks = []
+        # Use very small read chunks to minimize memory usage
+        read_chunk_size = min(5000, chunk_size // 10)  # Much smaller chunks
+        
+        output_chunks = []
+        current_output_buffer = []
+        current_output_size = 0
         rows_processed = 0
+        output_file_number = 1
         
-        # Read CSV in smaller chunks to manage memory
-        read_chunk_size = min(chunk_size, 10000)  # Read smaller chunks to manage memory
-        
-        current_chunk = []
-        chunk_number = 0
+        # Get header first
+        uploaded_file.seek(0)
+        header = uploaded_file.readline().strip()
         
         try:
-            for i, df_chunk in enumerate(pd.read_csv(uploaded_file, chunksize=read_chunk_size)):
-                current_chunk.append(df_chunk)
-                rows_processed += len(df_chunk)
+            # Process file in very small chunks
+            for chunk_df in pd.read_csv(uploaded_file, chunksize=read_chunk_size):
+                
+                # Add rows to current output buffer
+                chunk_rows = chunk_df.to_csv(index=False, header=False).strip().split('\n')
+                
+                for row in chunk_rows:
+                    if row.strip():  # Skip empty rows
+                        current_output_buffer.append(row)
+                        current_output_size += 1
+                        rows_processed += 1
+                        
+                        # When we reach the chunk size, save this output file
+                        if current_output_size >= chunk_size:
+                            # Create complete CSV content
+                            csv_content = header + '\n' + '\n'.join(current_output_buffer)
+                            output_chunks.append({
+                                'content': csv_content,
+                                'filename': f'split_{output_file_number}.csv',
+                                'row_count': current_output_size
+                            })
+                            
+                            # Reset for next file
+                            current_output_buffer = []
+                            current_output_size = 0
+                            output_file_number += 1
+                            
+                            # Force garbage collection after each file
+                            del csv_content
+                            gc.collect()
                 
                 # Update progress
                 progress = min(rows_processed / total_rows, 1.0)
                 progress_bar.progress(progress)
-                status_text.text(f"Processing: {rows_processed:,} / {total_rows:,} rows")
+                status_text.text(f"Processing: {rows_processed:,} / {total_rows:,} rows | Files created: {len(output_chunks)}")
                 
-                # Check if we have enough rows for a full output chunk
-                current_total_rows = sum(len(chunk) for chunk in current_chunk)
+                # Force garbage collection every few chunks
+                del chunk_df
+                gc.collect()
                 
-                if current_total_rows >= chunk_size or rows_processed >= total_rows:
-                    # Combine current chunks
-                    combined_chunk = pd.concat(current_chunk, ignore_index=True)
-                    
-                    # If we have more than chunk_size rows, split it
-                    while len(combined_chunk) >= chunk_size:
-                        chunk_to_save = combined_chunk.iloc[:chunk_size].copy()
-                        chunks.append(chunk_to_save)
-                        combined_chunk = combined_chunk.iloc[chunk_size:].reset_index(drop=True)
-                        
-                        # Force garbage collection
-                        del chunk_to_save
-                        gc.collect()
-                    
-                    # Keep remaining rows for next iteration
-                    current_chunk = [combined_chunk] if len(combined_chunk) > 0 else []
-                
-                # Force garbage collection periodically
-                if i % 5 == 0:
-                    gc.collect()
-                    
         except Exception as e:
-            st.error(f"Error during chunked reading: {e}")
+            st.error(f"Error during processing: {e}")
             return [], 0
         
-        # Handle any remaining rows
-        if current_chunk:
-            remaining_chunk = pd.concat(current_chunk, ignore_index=True)
-            if len(remaining_chunk) > 0:
-                chunks.append(remaining_chunk)
+        # Handle remaining rows
+        if current_output_buffer:
+            csv_content = header + '\n' + '\n'.join(current_output_buffer)
+            output_chunks.append({
+                'content': csv_content,
+                'filename': f'split_{output_file_number}.csv',
+                'row_count': current_output_size
+            })
+            del csv_content
+            gc.collect()
         
         progress_bar.progress(1.0)
-        status_text.text("Processing complete!")
+        status_text.text(f"✅ Processing complete! Created {len(output_chunks)} files.")
         
-        # Force final garbage collection
-        gc.collect()
-        
-        return chunks, total_rows
+        return output_chunks, total_rows
         
     except Exception as e:
         st.error(f"Error processing CSV: {e}")
@@ -131,6 +144,7 @@ def main():
         - Larger files may take longer to process
         - Each split file will contain up to 49,999 rows
         - Original data structure and content will be preserved
+        - The app uses memory-efficient processing to handle large files
         """)
     
     # File uploader
@@ -154,10 +168,10 @@ def main():
         if st.button("🔄 Split CSV File", type="primary"):
             with st.spinner("Processing your file..."):
                 try:
-                    # Split the CSV using chunked processing
-                    chunks, total_rows = split_csv_chunked(uploaded_file)
+                    # Split the CSV using memory-efficient processing
+                    output_files, total_rows = split_csv_memory_efficient(uploaded_file)
                     
-                    if total_rows == 0 or len(chunks) == 0:
+                    if total_rows == 0 or len(output_files) == 0:
                         st.error("❌ No data found or error processing file.")
                         return
                     
@@ -168,39 +182,45 @@ def main():
                     with col1:
                         st.metric("Total Records", f"{total_rows:,}")
                     with col2:
-                        st.metric("Split Files", len(chunks))
+                        st.metric("Split Files", len(output_files))
                     with col3:
-                        avg_records = total_rows // len(chunks) if len(chunks) > 0 else 0
+                        avg_records = total_rows // len(output_files) if len(output_files) > 0 else 0
                         st.metric("Avg Records/File", f"{avg_records:,}")
                     
                     # Display download section
-                    st.subheader("📥 Download Split Files")
+                    st.subheader("📥 Download All Split Files")
                     st.write("Click the links below to download each split file:")
                     
-                    # Create download buttons in columns for better layout
-                    cols = st.columns(3)
-                    for i, chunk in enumerate(chunks):
-                        col_idx = i % 3
-                        with cols[col_idx]:
-                            filename = f"split_{i+1}.csv"
-                            records_count = len(chunk)
+                    # Create download buttons for each file
+                    for i, file_info in enumerate(output_files):
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
                             st.markdown(
                                 get_download_link(
-                                    chunk, 
-                                    filename, 
-                                    f"📄 Split {i+1}<br>({records_count:,} records)"
+                                    file_info['content'], 
+                                    file_info['filename'], 
+                                    f"📄 Download {file_info['filename']}"
                                 ), 
                                 unsafe_allow_html=True
                             )
-                            st.write("")  # Add some spacing
+                        with col2:
+                            st.write(f"({file_info['row_count']:,} records)")
+                        
+                        # Clean up this file's content from memory immediately
+                        if i % 3 == 0:  # Garbage collect every few files
+                            gc.collect()
                     
-                    # Cleanup
-                    del chunks
+                    # Final cleanup
+                    del output_files
                     gc.collect()
+                    
+                    st.success(f"✅ All {len(output_files)} files are ready for download!")
                     
                 except Exception as e:
                     st.error(f"❌ An unexpected error occurred: {e}")
-                    st.write("Please try again or contact support if the issue persists.")
+                    st.write("Please try again with a smaller file or contact support if the issue persists.")
+                    # Force cleanup on error
+                    gc.collect()
 
 if __name__ == "__main__":
     main() 
