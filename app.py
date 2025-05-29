@@ -4,7 +4,7 @@ from pathlib import Path
 import io
 import base64
 
-MAX_FILE_SIZE_MB = 100  # Set a safe file size limit
+MAX_FILE_SIZE_MB = 200  # Set a safe file size limit
 
 def get_download_link(df, filename, text):
     """Generate a download link for a dataframe"""
