@@ -16,65 +16,69 @@ def main():
             return
         
         if st.button("Split CSV File", type="primary"):
-            with st.spinner("Processing..."):
-                try:
-                    # Read file content
-                    content = uploaded_file.read()
+            try:
+                # Show processing message
+                processing_msg = st.empty()
+                processing_msg.info("🔄 Reading and processing file...")
+                
+                # Read and decode file
+                content = uploaded_file.read()
+                if isinstance(content, bytes):
+                    try:
+                        content = content.decode('utf-8')
+                    except:
+                        content = content.decode('latin1', errors='ignore')
+                
+                # Process lines
+                lines = [line.strip() for line in content.split('\n') if line.strip()]
+                
+                if len(lines) < 2:
+                    st.error("File must have at least a header and one data row")
+                    return
+                
+                header = lines[0]
+                data_rows = lines[1:]
+                total_rows = len(data_rows)
+                
+                chunk_size = 49999
+                num_files = (total_rows + chunk_size - 1) // chunk_size
+                
+                processing_msg.success(f"✅ File processed! Creating {num_files} download files...")
+                
+                # Create download links container
+                st.subheader("📥 Download Your Split Files")
+                
+                # Process all chunks and create download links
+                for i in range(num_files):
+                    start_idx = i * chunk_size
+                    end_idx = min((i + 1) * chunk_size, total_rows)
                     
-                    # Handle encoding
-                    if isinstance(content, bytes):
-                        try:
-                            content = content.decode('utf-8')
-                        except:
-                            content = content.decode('latin1', errors='ignore')
+                    # Create chunk
+                    chunk_data = data_rows[start_idx:end_idx]
+                    csv_content = header + '\n' + '\n'.join(chunk_data)
                     
-                    # Split into lines
-                    lines = [line for line in content.split('\n') if line.strip()]
+                    # Create download link
+                    b64 = base64.b64encode(csv_content.encode('utf-8')).decode()
+                    href = f'data:file/csv;base64,{b64}'
+                    filename = f'split_{i + 1}.csv'
                     
-                    if len(lines) < 2:
-                        st.error("File must have at least a header and one data row")
-                        return
-                    
-                    header = lines[0]
-                    data_rows = lines[1:]
-                    total_rows = len(data_rows)
-                    
-                    if total_rows == 0:
-                        st.error("No data rows found")
-                        return
-                    
-                    # Calculate chunks
-                    chunk_size = 49999
-                    num_files = (total_rows + chunk_size - 1) // chunk_size
-                    
-                    st.info(f"Splitting {total_rows:,} rows into {num_files} files")
-                    
-                    progress_bar = st.progress(0)
-                    
-                    # Create chunks
-                    for i in range(num_files):
-                        start_idx = i * chunk_size
-                        end_idx = min((i + 1) * chunk_size, total_rows)
-                        
-                        chunk_data = data_rows[start_idx:end_idx]
-                        csv_content = header + '\n' + '\n'.join(chunk_data)
-                        
-                        # Create download link
-                        b64 = base64.b64encode(csv_content.encode('utf-8')).decode()
-                        href = f'data:file/csv;base64,{b64}'
-                        filename = f'split_{i + 1}.csv'
-                        
+                    # Display download link
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
                         st.markdown(
-                            f'<a href="{href}" download="{filename}">📥 Download {filename} ({len(chunk_data):,} rows)</a>',
+                            f'<a href="{href}" download="{filename}" style="text-decoration: none; color: #0066cc;">📥 Download {filename}</a>',
                             unsafe_allow_html=True
                         )
-                        
-                        progress_bar.progress((i + 1) / num_files)
-                    
-                    st.success(f"✅ Created {num_files} files ready for download!")
-                    
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
+                    with col2:
+                        st.write(f"{len(chunk_data):,} rows")
+                
+                # Summary
+                st.success(f"🎉 Successfully created {num_files} files with {total_rows:,} total rows!")
+                st.info("💡 Click the download links above to save each file to your computer.")
+                
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+                st.write("Please try with a smaller file or check that your CSV is properly formatted.")
 
 if __name__ == "__main__":
     main() 
